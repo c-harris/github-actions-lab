@@ -1,0 +1,160 @@
+name: Laravel application (Mysql)
+on: 
+  workflow_dispatch:
+#  push:
+#    branches:
+#      - master
+#  pull_request:
+#    branches:
+#      - master
+env:
+  COMPOSER_VERSION: "^2.1"
+  PHP_EXTENSIONS: "mbstring, ds, ssh2"
+  PHP_INI_VALUES: "memory_limit=-1, phar.readonly=0"
+jobs:
+  laravel-tests:
+    name: P${{ matrix.php-versions }} - L${{ matrix.laravel }} - ${{ matrix.dependency-stability }} - ${{ matrix.operating-system}}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        operating-system: [ubuntu-latest]
+        php-versions: [ '7.3' ]
+        dependency-stability: [ prefer-stable ]
+    env:
+      DB_CONNECTION: mysql
+      DB_DATABASE: laravel
+      DB_USERNAME: root
+      DB_PASSWORD: password
+      BROADCAST_DRIVER: log
+      CACHE_DRIVER: redis
+      QUEUE_CONNECTION: redis
+      SESSION_DRIVER: redis
+    # Service container Mysql mysql
+    services:
+      mysql:
+        image: mysql:latest
+        env:
+          MYSQL_ROOT_PASSWORD: password
+          MYSQL_DATABASE: test
+        ports:
+          - 33306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5 -e MYSQL_ROOT_PASSWORD=password -e MYSQL_USER=laravel -e MYSQL_PASSWORD=password -e MYSQL_DATABASE=laravel --entrypoint sh mysql:8 -c "exec docker-entrypoint.sh mysqld --default-authentication-plugin=mysql_native_password --log_bin_trust_function_creators=1" 
+      redis:
+        image: redis
+        ports:
+          - 6379/tcp
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=3
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Node.js
+      uses: actions/setup-node@v1
+      with:
+        node-version: '15.x'
+    - name: Cache node_modules directory
+      uses: actions/cache@v2
+      id: node_modules-cache
+      with:
+        path: node_modules
+        key: ${{ runner.OS }}-build-${{ hashFiles('**/package.json') }}-${{ hashFiles('**/package-lock.json') }}
+    - name: Install NPM packages
+      if: steps.node_modules-cache.outputs.cache-hit != 'true'
+      run: npm ci
+    - name: Build frontend
+      run: npm run development
+    - name: Install PHP with extensions
+      uses: shivammathur/setup-php@v2
+      with:
+        coverage: "none"
+        tools: "composer:v2"
+        extensions: "${{ env.PHP_EXTENSIONS }}"
+        ini-values: "${{ env.PHP_INI_VALUES }}"
+        php-version: "${{ matrix.php-versions }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.COMPOSER_GITHUB_TOKEN }}
+    - name: Get Composer Cache Directory 2
+      id: composer-cache
+      run: |
+        echo "::set-output name=dir::$(composer config cache-files-dir)"
+    - uses: actions/cache@v2
+      id: actions-cache
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-composer-
+    - name: Cache PHP dependencies
+      uses: actions/cache@v2
+      id: vendor-cache
+      with:
+        path: vendor
+        key: ${{ runner.OS }}-build-${{ hashFiles('**/composer.lock') }}
+    - name: Copy .env
+      run: php -r "file_exists('.env') || copy('.env.ci', '.env');"
+    - name: Copy base file for http mocks
+      run: |
+        mkdir -p public/www/images/venue
+        cp resources/images/venue/main.jpg public/www/images/venue/main.jpg
+    - name: Install Dependencies
+      if: steps.vendor-cache.outputs.cache-hit != 'true'
+      run: composer install -q --no-ansi --no-interaction --no-scripts --no-progress --prefer-dist --ignore-platform-reqs
+    - name: Generate key
+      run: php artisan key:generate
+      env:
+        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+    - name: Directory Permissions
+      run: chmod -R 777 storage bootstrap/cache
+    - name: Setup ffmpeg
+      uses: FedericoCarboni/setup-ffmpeg@v1
+    - name: Run Migrations
+# Set environment
+      run: php artisan -vvv migrate
+      env:
+        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+    - name: Show dir
+      run: pwd
+    - name: PHP Version
+      run: php --version
+
+# Code quality
+    - name: Execute tests (Unit and Feature tests) via ParaTest
+# Set environment
+      run: vendor/bin/phpunit --log-junit report.xml
+      env:
+        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+        APP_FFMPEG_BINARY_PATH: /opt/hostedtoolcache/ffmpeg/6.0/x64/
+    - name: Execute Code Sniffer via phpcs
+      run: |
+        composer require --dev squizlabs/php_codesniffer
+        vendor/bin/phpcs --standard=PSR12 app
+      env:
+        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+
+    - name: Execute Code Static Analysis (PHP Stan + Larastan)
+      run: |
+        composer require --dev nunomaduro/larastan
+        vendor/bin/phpstan analyse app -c ./vendor/nunomaduro/larastan/extension.neon  --level=4 --no-progress
+      env:
+        DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+        REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+
+    - name: Browser Test - upgrade and start Chrome Driver 
+      run: |
+        composer require --dev laravel/dusk
+        php artisan dusk:chrome-driver --detect
+        ./vendor/laravel/dusk/bin/chromedriver-linux > /dev/null 2>&1 &
+        env:
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+          REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
+    - name: Run Dusk Tests
+      run: |
+        php artisan serve > /dev/null 2>&1 &
+        chmod -R 0755 vendor/laravel/dusk/bin/
+        php artisan migrate
+        php artisan dusk
+        env:
+          DB_PORT: ${{ job.services.mysql.ports['3306'] }}
+          REDIS_PORT: ${{ job.services.redis.ports['6379'] }}

@@ -1,0 +1,35 @@
+on: workflow_dispatch
+name: CI
+env:
+  COMPOSER_VERSION: "^2.1"
+  PHP_EXTENSIONS: "mbstring, ds, ssh2"
+  PHP_INI_VALUES: "memory_limit=-1, phar.readonly=0"
+jobs:
+deploy:
+  name: Deploy Project
+  runs-on: ubuntu-latest
+  if: github.ref == 'refs/heads/staging' || github.ref == 'refs/heads/master'
+  steps:
+    - name: Extract branch name
+      shell: bash
+      run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+      id: extract_branch
+    - name: Select Env
+      id: set-env
+      env:
+        DOT_ENV_STAGING: ${{ secrets.DOT_ENV_STAGING }}
+        DOT_ENV_PROD: ${{ secrets.DOT_ENV_PROD }}
+      run: |
+        if [ ${{ github.ref }} != 'refs/heads/main' ]; then
+          echo "IS NOT main branch"
+          echo "dotenv=$DOT_ENV_STAGING" >> $GITHUB_ENV
+        else
+          echo "IS main branch"
+          echo "dotenv=$DOT_ENV_PROD" >> $GITHUB_ENV
+        fi
+      shell: bash
+
+    - name: Deploy to Staging
+      env:
+        DOT_ENV: ${{ steps.set-env.outputs }}
+      run: echo $DOT_ENV

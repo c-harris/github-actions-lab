@@ -1,0 +1,17 @@
+name: testOutput
+
+on:
+  workflow_dispatch:
+
+jobs:
+  output:
+    runs-on: ubuntu-20.04
+    steps:
+      - name: 'Setting a debug message'
+        run: echo "::debug::Set the Octocat variable"
+      - name: 'Setting a notice message'
+        run: echo "::notice file=app.js,line=1,col=5,endColumn=7::Missing semicolon"
+      - name: 'Setting a warning message'
+        run: echo "::warning file=app.js,line=1,col=5,endColumn=7::Missing semicolon"
+      - name: 'Setting an error message' 
+        run: echo "::error file=app.js,line=1,col=5,endColumn=7::Missing semicolon"
